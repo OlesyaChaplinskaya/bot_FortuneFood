@@ -1,9 +1,36 @@
 from aiogram import Bot, Dispatcher, executor, types
 from aiogram.types.web_app_info import WebAppInfo
-from flask import Flask, jsonify
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+import openpyxl
 import sqlite3
 import random
 import os
+
+
+# Функция для создания таблицы пользователей
+def create_users_table():
+    conn = sqlite3.connect('venv/db/Blackberry_bot.db')
+    cursor = conn.cursor()
+    query = '''
+    CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL UNIQUE
+    )
+    '''
+    cursor.execute(query)
+    conn.commit()
+    conn.close()
+
+# Функция для добавления user_id в таблицу пользователей
+def add_user_to_database(user_id):
+    conn = sqlite3.connect('venv/db/Blackberry_bot.db')
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
+    conn.commit()
+    conn.close()
+
 
 # Создание таблиц базы данных
 
@@ -19,11 +46,6 @@ with sqlite3.connect('venv\db\Blackberry_bot.db') as db:
 
 with sqlite3.connect('venv\db\Blackberry_bot.db') as db:
     cursor = db.cursor()
-    query = 'CREATE TABLE IF NOT EXISTS Breakfast(Recipe_id INTEGER UNIQUE, Name_B TEXT, Ingredients_B TEXT, Instruction_B TEXT, FOREIGN KEY (Recipe_id) REFERENCES Recipes(Recipe_id))'
-    cursor.execute(query)
-
-with sqlite3.connect('venv\db\Blackberry_bot.db') as db:
-    cursor = db.cursor()
     query = 'CREATE TABLE IF NOT EXISTS Lunch(Recipe_id INTEGER UNIQUE, Name_L TEXT, Ingredients_L TEXT, Instruction_L TEXT, FOREIGN KEY (Recipe_id) REFERENCES Recipes(Recipe_id))'
     cursor.execute(query)
 
@@ -31,7 +53,6 @@ with sqlite3.connect('venv\db\Blackberry_bot.db') as db:
     cursor = db.cursor()
     query = 'CREATE TABLE IF NOT EXISTS Dinner(Recipe_id INTEGER UNIQUE, Name_D TEXT, Ingredients_D TEXT, Instruction_D TEXT, FOREIGN KEY (Recipe_id) REFERENCES Recipes(Recipe_id))'
     cursor.execute(query)
-
 
 with sqlite3.connect('venv\db\Blackberry_bot.db') as db:
     cursor = db.cursor()
@@ -56,43 +77,102 @@ with sqlite3.connect('venv\db\Blackberry_bot.db') as db:
 with sqlite3.connect('venv/db/Blackberry_bot.db') as db:
     cursor = db.cursor()
     query = '''
-    CREATE TABLE IF NOT EXISTS Contacts(
-        Id INTEGER PRIMARY KEY AUTOINCREMENT,
-        Name TEXT NOT NULL,
-        Phone TEXT NOT NULL,
-        Date TEXT NOT NULL,
-        Time TEXT NOT NULL,
-        Address TEXT NOT NULL
-    )
-    '''
+        CREATE TABLE IF NOT EXISTS Users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL UNIQUE
+        )
+        '''
     cursor.execute(query)
 
-app = Flask(__name__)
+with sqlite3.connect('venv/db/Blackberry_bot.db') as db:
+    cursor = db.cursor()
+    query = '''
+        CREATE TABLE IF NOT EXISTS Notifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        message TEXT NOT NULL,
+        send_day INTEGER NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES Users(user_id)
+        )
+        '''
+    cursor.execute(query)
+
+
+# Чтение данных
+workbook = openpyxl.load_workbook('C:/Users/Олеся/Desktop/bot/Tilda/Tilda_Заказы.xlsx')
+sheet = workbook.active
+
+# Подключение к базе данных SQLite
+conn = sqlite3.connect('venv/db/Blackberry_bot.db')
+c = conn.cursor()
+
+# Проверка наличия таблицы Orders в базе данных и создание ее, если отсутствует
+columns = [cell.value for cell in sheet[1]]
+c.execute('CREATE TABLE IF NOT EXISTS Orders ({})'.format(' TEXT, '.join(columns)))
+
+# Получение всех существующих заказов
+c.execute('SELECT * FROM Orders')
+existing_orders = c.fetchall()
+existing_orders_dict = {tuple(row): True for row in existing_orders}
+
+# Вставка новых данных из файла в бд (если они отсутствуют в существующих заказах)
+for row in sheet.iter_rows(min_row=2, values_only=True):
+    if tuple(row) not in existing_orders_dict:
+        values = ','.join(['"' + str(cell) + '"' for cell in row])
+        c.execute('INSERT INTO Orders VALUES ({})'.format(values))
+
+# Сохранение изменений и закрытие соединения
+conn.commit()
+conn.close()
+
+
 bot = Bot('6572549436:AAE_zESbxcZgSNwIAmpIfpfZjJKpSPBP8C0')
 dp = Dispatcher(bot)
 
+def add_user_to_database(user_id):
+    with sqlite3.connect('venv/db/Blackberry_bot.db') as db:
+        cursor = db.cursor()
+        cursor.execute("INSERT OR IGNORE INTO Users (user_id) VALUES (?)", (user_id,))
 
-# Функция для подключения к базе данных
-def get_db_connection():
-    conn = sqlite3.connect('venv/db/Blackberry_bot.db')
-    conn.row_factory = sqlite3.Row
-    return conn
+# Функция для получения уведомлений для определенного дня
+def get_notifications_for_day(day):
+    with sqlite3.connect('venv/db/Blackberry_bot.db') as db:
+        cursor = db.cursor()
+        # Получение уведомлений для заданного дня
+        query = 'SELECT user_id, title, message FROM Notifications WHERE send_day = ?'
+        cursor.execute(query, (day,))
+        return cursor.fetchall()
 
-# Маршрут для API, который возвращает данные из базы данных
-@app.route('/data', methods=['GET'])
-def get_data():
-    conn = get_db_connection()
-    data = conn.execute('SELECT * FROM Contacts').fetchall()
-    conn.close()
-    return jsonify([dict(row) for row in data])
+# Асинхронная функция для отправки уведомлений
+async def send_notifications(day):
+    notifications = get_notifications_for_day(day)
+    for user_id, title, message in notifications:
+        # Отправка уведомления каждому пользователю
+        await bot.send_message(user_id, f'{title}\n\n{message}')
 
-
+# Обработчик команды /start
 @dp.message_handler(commands=['start'])
 async def start(message: types.Message):
-    inline_markup = types.InlineKeyboardMarkup()
-    inline_markup.add(types.InlineKeyboardButton('Следующий шаг', callback_data='dalee'))
+    user_id = message.chat.id
+    # Добавление пользователя в базу данных
+    add_user_to_database(user_id)
+    inline_markup = InlineKeyboardMarkup()
+    inline_markup.add(InlineKeyboardButton('Следующий шаг', callback_data='dalee'))
+    # Приветственное сообщение пользователю
     await bot.send_message(message.chat.id, f'Здравствуйте, {message.from_user.full_name}!')
     await bot.send_message(message.chat.id, 'Мы рады приветствовать Вас в telegram bot магазина “Ежевика”!', reply_markup=inline_markup)
+
+# Инициализация планировщика задач
+scheduler = AsyncIOScheduler()
+
+# Планирование задач отправки уведомлений на 6, 15 и 25 числа каждого месяца в 12:00
+scheduler.add_job(send_notifications, CronTrigger(day='6', hour=12, minute=0), args=[6])
+scheduler.add_job(send_notifications, CronTrigger(day='15', hour=12, minute=0), args=[15])
+scheduler.add_job(send_notifications, CronTrigger(day='25', hour=12, minute=0), args=[25])
+
+# Запуск планировщика
+scheduler.start()
 
 
 @dp.callback_query_handler(text='dalee')
@@ -104,8 +184,7 @@ async def next_step(callback_query: types.CallbackQuery):
     await callback_query.message.answer('Воспользуйтесь кнопками в меню для выбора необходимого раздела.', reply_markup=markup)
 
 
-# Хранение отправленных рецептов для каждого пользователя и каждого типа рецепта
-user_sent_recipes = {}
+user_sent_recipes = {}  # Инициализируем словарь для отслеживания отправленных рецептов
 
 MAX_CAPTION_LENGTH = 1024
 
@@ -158,7 +237,7 @@ async def send_breakfast_recipe(call: types.CallbackQuery):
     # Добавление рецепта в список отправленных
     user_sent_recipes[user_id]['breakfast'].append(recipe_id)
 
-    # Создание клавиатуры с кнопкой "Еще"
+    # Создание клавиатуры с кнопками "Еще"
     keyboard = types.InlineKeyboardMarkup()
     more_button = types.InlineKeyboardButton(text='Еще', callback_data='more_breakfast')
     keyboard.add(more_button)
